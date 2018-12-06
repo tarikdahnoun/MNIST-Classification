@@ -1,0 +1,283 @@
+from sklearn.datasets import fetch_mldata
+import numpy as np
+import matplotlib
+import matplotlib.pylab as plt
+import warnings
+warnings.filterwarnings("ignore")
+
+mnist = fetch_mldata('MNIST original')
+
+X, y = mnist["data"], mnist["target"]
+# print(X.shape)  # 70000 pictures, 28x28 pixels concatenated to a 784 length array
+# print(y.shape)  # 70000 picture labels
+
+some_digit = X[36000]
+some_digit_image = some_digit.reshape(28, 28)
+
+plt.imshow(some_digit_image, cmap=matplotlib.cm.binary, interpolation="nearest")
+plt.axis("off")
+plt.show()
+# print(y[36000])
+
+# Setting train data aside, and shuffle it
+X_train, X_test, y_train, y_test = X[:60000], X[60000:], y[:60000], y[60000:]
+shuffle_index = np.random.permutation(60000)
+X_train, y_train = X_train[shuffle_index], y_train[shuffle_index]
+
+
+# Training the Binary Classifier
+# Making a 5-detector
+y_train_5 = (y_train == 5)  # True for all 5's in train
+y_test_5 = (y_test == 5)  # True for all 5's in test
+
+
+# Lets use a SGD Classifier from scikit
+from sklearn.linear_model import SGDClassifier
+
+sgd_clf = SGDClassifier(random_state=42)
+sgd_clf.fit(X_train, y_train_5)
+check = sgd_clf.predict([some_digit])
+
+# OG Cross Validation Process
+
+from sklearn.model_selection import StratifiedKFold
+from sklearn.base import clone
+skfolds = StratifiedKFold(n_splits=3, random_state=42)
+
+
+def og_cross_val_score(sgd_clf, X_train, y_train_5):
+    C = list([])
+    for train_index, test_index in skfolds.split(X_train, y_train_5):
+        clone_clf = clone(sgd_clf)
+        X_train_folds = X_train[train_index]
+        y_train_folds = y_train_5[train_index]
+        X_test_fold = X_train[test_index]
+        y_test_fold = y_train_5[test_index]
+
+        clone_clf.fit(X_train_folds, y_train_folds)
+        y_pred = clone_clf.predict(X_test_fold)
+        n_correct = sum(y_pred == y_test_fold)
+        correct = (n_correct/len(y_pred))
+        C.append(correct)
+    return C
+
+
+# CORR1 = og_cross_val_score(sgd_clf, X_train, y_train_5)
+# print(CORR1)
+
+
+# Sklearn cross val proc
+
+from sklearn.model_selection import cross_val_score
+# CORR2 = cross_val_score(sgd_clf, X_train, y_train_5, cv=3, scoring='accuracy')
+# print(CORR2)
+
+# Seems pretty good on both ends
+
+
+# But heres a demonstration of why accuracy is not a good measure for performance
+# Consider a NOT 5 classifier
+# from sklearn.base import BaseEstimator
+#
+#
+# class Never5Classifier(BaseEstimator):
+#     def fit(self, X, y=None):  # NO fitting occurs
+#         pass
+#
+#     def predict(self, X):
+#         return np.zeros((len(X), 1), dtype=bool)  # Literally prints false (0) at every point
+#
+#
+# never_5_clf = Never5Classifier()
+# CORR3 = cross_val_score(never_5_clf, X_train, y_train_5, cv=3, scoring='accuracy')
+# print(CORR3)  # 90% accuracy??? sike
+# 90% of the numbers are not 5, hence the accuracy for a classifier that does nothing
+
+
+# So lets not use this method. Lets use a confusion matrix
+from sklearn.model_selection import cross_val_predict
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import precision_score, recall_score
+from sklearn.metrics import f1_score
+
+
+# y_train_pred = cross_val_predict(sgd_clf, X_train, y_train_5, cv=3)
+# imconfused = confusion_matrix(y_train_5, y_train_pred)
+# pscore = precision_score(y_train_5, y_train_pred)
+# rscore = recall_score(y_train_5, y_train_pred)
+# f1 = f1_score(y_train_5, y_train_pred)
+# print(pscore, rscore, f1)
+
+
+# Analyzing the precision/recall tradeoff
+from sklearn.metrics import precision_recall_curve
+# y_scores = sgd_clf.decision_function([some_digit])
+# threshold = 0
+# y_some_digit_pred = (y_scores > threshold)
+# print(y_some_digit_pred)  # The typical threshold is 0, a tradeoff between precision and recall
+# threshold = 200000
+# y_some_digit_pred = (y_scores > threshold)
+# print(y_some_digit_pred)  # We see that we've increased precision, but decreased recall
+
+# So how do we decide which threshold to use? We'll need to use cross_val_predict with decision_function method
+# Then, we import the precision_recall_curve over many threshold values. Then select the best tradeoff threshold.
+
+y_scores = cross_val_predict(sgd_clf, X_train, y_train_5, cv=3, method='decision_function')
+precisions, recalls, thresholds = precision_recall_curve(y_train_5, y_scores)
+
+
+def plot_precision_recall_vs_threshold(precisions, recalls, thresholds):
+    plt.plot(thresholds, precisions[:-1], "b--", label="Precision")
+    plt.plot(thresholds, recalls[:-1], "g-", label="Recall")
+    plt.xlabel("Threshold")
+    plt.legend(loc="center left")
+    plt.ylim([0, 1])
+    plt.show()
+
+
+def plot_precision_vs_recall(precisions, recalls):
+    plt.plot(recalls[:-1], precisions[:-1], 'r-')
+    plt.show()
+
+
+plot_precision_recall_vs_threshold(precisions, recalls, thresholds)
+plot_precision_vs_recall(precisions, recalls)  # We see a sharp drop at 80%
+
+
+# So if want 90% accuracy, we should use threshold=70000(roughly)
+threshold = 70000
+y_train_pred_90 = (y_scores > threshold)
+print(precision_score(y_train_5, y_train_pred_90))
+print(recall_score(y_train_5, y_train_pred_90))
+
+# The ROC Curve
+from sklearn.metrics import roc_curve
+from sklearn.metrics import roc_auc_score
+fpr, tpr, thresholds = roc_curve(y_train_5, y_scores)
+
+# Lets compare the sgd classifier to the random forest classifier
+from sklearn.ensemble import RandomForestClassifier
+
+forest_clf = RandomForestClassifier(random_state=42)
+y_probas_forest = cross_val_predict(forest_clf, X_train, y_train_5, cv=3, method="predict_proba")
+y_scores_forest = y_probas_forest[:, 1]
+fpr_forest, tpr_forest, thresholds_forest = roc_curve(y_train_5, y_scores_forest)
+
+
+def plot_roc_curve(fpr, tpr, fpr_forest, tpr_forest):
+    plt.plot(fpr, tpr, linewidth=2, label="SGD")
+    plt.plot(fpr_forest, tpr_forest, linewidth=2, label="Random Forest Regressor")
+    plt.legend(loc="lower right")
+    plt.plot([0, 1], [0, 1], "k--")
+    plt.axis([0, 1, 0, 1])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+
+
+print('SGD AUC: ', roc_auc_score(y_train_5, y_scores))
+print('Forest AUC: ', roc_auc_score(y_train_5, y_scores_forest))
+plot_roc_curve(fpr, tpr, fpr_forest, tpr_forest)
+plt.show()
+# Hence, we see that RandomForestClassifier is a better option
+
+
+y_train_pred = cross_val_predict(forest_clf, X_train, y_train_5, cv=3)
+forest_pscore = precision_score(y_train_5, y_train_pred)
+forest_rscore = recall_score(y_train_5, y_train_pred)
+
+
+print("Random Forest Classifier Precision: ", forest_pscore)
+print("Random Forest Classifier Recall: ", forest_rscore)
+
+# Using OvA Classifier
+sgd_clf.fit(X_train, y_train)  # Now, we are trying to learn all the digits, so y_train_5 is unnecessary
+print (sgd_clf.predict([some_digit]))
+
+some_digit_scores = sgd_clf.decision_function([some_digit])
+best_guess = (np.argmax(some_digit_scores))
+print(sgd_clf.classes_)
+print(sgd_clf.classes_[best_guess])
+
+# We can also try RandomForestClassifer
+forest_clf.fit(X_train, y_train)
+forest_clf.predict([some_digit])
+probs = forest_clf.predict_proba([some_digit])
+print(probs)
+
+forest_eval = cross_val_score(sgd_clf, X_train, y_train, cv=3, scoring='accuracy')
+print(forest_eval)
+# Around 85% accuracy... solid
+
+# We should also properly scale for further accuracy
+from sklearn.preprocessing import StandardScaler
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train.astype(np.float64))
+cross_val_score(sgd_clf, X_train_scaled, y_train, cv=3, scoring='accuracy')
+# Giving 90% Accuracy
+print(len(X_train), len(X_train_scaled))
+# Error Analysis using the confusion matrix
+y_train_pred = cross_val_predict(sgd_clf, X_train_scaled, y_train, cv=3)
+print(len(y_train), len(y_train_pred))
+conf_mx = confusion_matrix(y_train, y_train_pred)
+plt.matshow(conf_mx, cmap=plt.cm.gray)
+plt.show()
+
+# Error normalization
+row_sums = conf_mx.sum(axis=1, keepdims=True)
+norm_conf_mx = conf_mx/row_sums
+
+np.fill_diagonal(norm_conf_mx, 0)
+plt.matshow(norm_conf_mx, cmap=plt.cm.gray)
+plt.show()
+
+# Multilabel Classification
+from sklearn.neighbors import KNeighborsClassifier
+
+y_train_large = (y_train >= 7)
+y_train_odd = (y_train % 2 == 1)
+y_multilabel = np.c_[y_train_large, y_train_odd]
+
+knn_clf = KNeighborsClassifier()
+knn_clf.fit(X_train, y_multilabel)
+
+print(knn_clf.predict([some_digit]))
+y_train_knn_pred = cross_val_predict(knn_clf, X_train, y_multilabel, cv=3)
+print(f1_score(y_multilabel, y_train_knn_pred, average="weighted"))
+
+# Multioutput Classification
+# Lets add noise to our system
+noise = np.random.randint(0, 100, (len(X_train), 784))
+X_train_mod = X_train + noise
+noise = np.random.randint(0, 100, (len(X_test), 784))
+X_test_mod = X_test + noise
+y_train_mod = X_train
+y_test_mod = X_test
+
+# some_digit = X_train_mod[36000]
+# some_digit_image = some_digit.reshape(28, 28)
+#
+# plt.imshow(some_digit_image, cmap=matplotlib.cm.binary, interpolation="nearest")
+# plt.axis("off")
+# plt.show()
+
+
+# Clean the data
+def plot_digits(instances, images_per_row=10, **options):
+    size = 28
+    images_per_row = min(len(instances), images_per_row)
+    images = [instance.reshape(size, size) for instance in instances]
+    n_rows = (len(instances) - 1) // images_per_row + 1
+    row_images = []
+    n_empty = n_rows * images_per_row - len(instances)
+    images.append(np.zeros((size, size * n_empty)))
+    for row in range(n_rows):
+        rimages = images[row * images_per_row : (row + 1) * images_per_row]
+        row_images.append(np.concatenate(rimages, axis=1))
+    image = np.concatenate(row_images, axis=0)
+    plt.imshow(image, cmap=matplotlib.cm.binary, **options)
+    plt.axis("off")
+
+
+knn_clf.fit(X_train_mod, y_train_mod)
+clean_digit = knn_clf.predict([X_test_mod[36000]])
+plot_digits(clean_digit)
